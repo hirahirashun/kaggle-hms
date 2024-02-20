@@ -1,0 +1,10 @@
+  name: HMSSpecEEGThreePararellModel
+  params:
+    backbone_name: 'tf_efficientnet_b0'
+    pretrained: True
+    kernels:
+      - 3
+      - 5
+      - 7
+      - 9
+    fixed_kernel_size: 17

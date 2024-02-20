@@ -1,0 +1,4 @@
+  name: HMSSpecBaseModel
+  params:
+    backbone_name: efficientnet_b0
+    pretrained: true

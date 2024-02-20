@@ -1,0 +1,86 @@
+# ---------- Overriding hydra default configs ----------
+hydra:
+  job:
+    name: train
+    chdir: false
+  run:
+    dir: ${dir.output_dir}/${exp_name}
+  sweep:
+    dir: ${dir.output_dir}/${exp_name}
+    subdir: run${hydra.job.num}
+
+dir:
+  data_dir: "data"
+  processed_dir: "outputs"
+  split_dir: "folds"
+  output_dir: "result"
+  save_dir: ${dir.output_dir}/${exp_name}
+
+defaults:
+  - _self_
+  - model: HMSSpecPararellModel
+  #- eeg_feat_extractor: EEGFeatureExtractor
+
+seed: 1086
+exp_name: dummy
+n_folds: 5
+n_folds_total: 10
+n_folds_start: 0
+fold_ver: 4
+split_by: eeg_id
+device: "cuda:0"
+spec_img_size: 512
+batch_size: 32
+num_workers: 2
+num_samples: 10000
+early_stopping_rounds: 5
+use_eeg_spec: true
+use_raw_eeg: false
+use_overlap: false
+pretrained: false
+exclude_difficult_data: false
+pretrained_exp: dummy
+in_channels: 5
+num_classes: 6
+loss_ver: 1
+data_process_ver: 3
+eeg_spec_version: 2
+do_label_smoothing: false
+hard_sample: false
+pred_confidence: false
+
+
+
+# label
+labels:
+  - "seizure_vote"
+  - "lpd_vote"
+  - "gpd_vote"
+  - "lrda_vote"
+  - "grda_vote"
+  - "other_vote"
+
+trainer:
+  epochs: 20
+  device: 1
+  accelerator: gpu
+  use_amp: true
+  debug: false
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  monitor: valid_score
+  monitor_mode: min
+  check_val_every_n_epoch: 1
+
+# optimizer
+optimizer:
+  lr: 0.0001
+
+# scheduler
+scheduler:
+  num_warmup_steps: 0
+
+aug:
+  do_mixup: true
+  do_cutmix: true
+  do_horizontal_flip: true
