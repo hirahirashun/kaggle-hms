@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 
-def mixup_data(x, y, y2, alpha=2.0, use_cuda=True):
+def mixup_data(x, y, y2, y3, alpha=2.0, use_cuda=True):
     """Returns mixed inputs, pairs of targets, and lambda"""
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
@@ -18,8 +18,9 @@ def mixup_data(x, y, y2, alpha=2.0, use_cuda=True):
     mixed_x = lam * x + (1 - lam) * x[index, :]
     mixed_y = lam * y + (1 - lam) * y[index, :]
     mixed_y2 = lam * y2 + (1 - lam) * y2[index, :]
+    mixed_y3 = lam * y3 + (1 - lam) * y3[index, :]
 
-    return mixed_x, mixed_y, mixed_y2, index, lam
+    return mixed_x, mixed_y, mixed_y2, mixed_y3, index, lam
 
 
 def get_rand_bbox(x, lam):
@@ -38,7 +39,7 @@ def get_rand_bbox(x, lam):
     return bb_x_1, bb_y_1, bb_x_2, bb_y_2
 
 
-def cutmix_data(x, y, y2, alpha=2.0, use_cuda=True):
+def cutmix_data(x, y, y2, y3, alpha=2.0, use_cuda=True):
     """Returns mixed inputs, pairs of targets, and lambda"""
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
@@ -57,5 +58,6 @@ def cutmix_data(x, y, y2, alpha=2.0, use_cuda=True):
 
     y = lam * y + (1 - lam) * y[index, :]
     y2 = lam * y2 + (1 - lam) * y2[index, :]
+    y3 = lam * y3 + (1 - lam) * y3[index, :]
 
-    return x, y, y2, index, lam
+    return x, y, y2, y3, index, lam

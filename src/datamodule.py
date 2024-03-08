@@ -15,19 +15,19 @@ from src.utils.common import process_raw_eeg_data
 ###################
 # Load Functions
 ###################
-def get_path_label(train_idx, val_idx, label_list, level_label_list, processed_dir, eeg_spec_version, train_all: pd.DataFrame):
+def get_path_label(train_idx, val_idx, label_list, processed_dir, eeg_spec_version, train_all: pd.DataFrame):
     """Get file path and target info."""
     spec_img_pths = []
     eeg_spec_img_pths = []
     raw_eeg_pths = []
+
     labels = train_all[label_list].values
-    level_labels = train_all[level_label_list].values
 
     for label_id in train_all["label_id"].values:
         spec_img_path = processed_dir + f"/train_spectrograms_split/{label_id}.npy"
         spec_img_pths.append(spec_img_path)
-        if eeg_spec_version == 2:
-            eeg_spec_img_path = processed_dir + f"/train_eeg_spectrograms_v2_split/{label_id}.npy"
+        if eeg_spec_version > 1:
+            eeg_spec_img_path = processed_dir + f"/train_eeg_spectrograms_v{eeg_spec_version}_split/{label_id}.npy"
         else:
             eeg_spec_img_path = processed_dir + f"/train_eeg_spectrograms_split/{label_id}.npy"
 
@@ -39,15 +39,14 @@ def get_path_label(train_idx, val_idx, label_list, level_label_list, processed_d
         "spec_paths": [spec_img_pths[idx] for idx in train_idx],
         "eeg_spec_paths": [eeg_spec_img_pths[idx] for idx in train_idx],
         "raw_eeg_paths": [raw_eeg_pths[idx] for idx in train_idx],
-        "labels": [labels[idx].astype("float32") for idx in train_idx],
-        "level_labels": [level_labels[idx].astype("float32") for idx in train_idx],}
+        "labels": [labels[idx].astype("float32") for idx in train_idx]}
 
     val_data = {
         "spec_paths": [spec_img_pths[idx] for idx in val_idx],
         "eeg_spec_paths": [eeg_spec_img_pths[idx] for idx in val_idx],
         "raw_eeg_paths": [raw_eeg_pths[idx] for idx in val_idx],
         "labels": [labels[idx].astype("float32") for idx in val_idx],
-        "level_labels": [level_labels[idx].astype("float32") for idx in val_idx]}
+        }
     
     return train_data, val_data, train_idx, val_idx
 
@@ -77,21 +76,20 @@ class HMSDataModule(LightningDataModule):
         self.processed_dir = cfg.dir.processed_dir
         self.label_list = cfg.labels
         self.label_list = ["seizure_vote", "lpd_vote", "gpd_vote", "lrda_vote", "grda_vote", "other_vote"]
-        self.level_label_list = ["pattern_edge", "pattern_idealized", "pattern_proto", "pattern_undecided"]
 
-        split = OmegaConf.load(cfg.dir.split_dir + f"/{cfg.split_by}_fold{cfg.n_folds_total}_v{cfg.fold_ver}/fold_{cfg.n_folds_start + fold_id}.yaml")
+        split = OmegaConf.load(cfg.dir.split_dir + f"/{cfg.split_by}_fold{cfg.n_folds_total}_v{cfg.fold_ver}/fold_{fold_id}.yaml")
         train_ids = split.train_id
         val_ids = split.val_id
 
         all_df = pd.read_csv(self.data_dir + "/train.csv")
         # convert vote to probability
-        all_df[self.label_list] /= all_df[self.label_list].sum(axis=1).values[:, None]
+        # all_df[self.label_list] /= all_df[self.label_list].sum(axis=1).values[:, None]
 
-        target_level = pd.read_csv(self.processed_dir + "/target_pattern.csv")
+        # target_level = pd.read_csv(self.processed_dir + "/target_pattern.csv")
+        # target_level_pred = pd.read_csv(self.processed_dir + "/target_pred.csv")
 
-        all_df = all_df.merge(target_level, how='left', on='eeg_id')
-
-
+        # all_df = all_df.merge(target_level, how='left', on='eeg_id')
+        # all_df = all_df.merge(target_level_pred, how='left', on='eeg_id')
 
         all_df = all_df.groupby(cfg.split_by).head(1).reset_index(drop=True)
 
@@ -99,16 +97,25 @@ class HMSDataModule(LightningDataModule):
         if self.cfg.exclude_difficult_data:
             exclude_list = np.load("/home/hiramatsu/kaggle/hms-harmful-brain-activity-classification/folds/exclude_list.npy")
             self.train_df = self.train_df[~self.train_df['label_id'].isin(exclude_list)]
+            
         self.val_df = all_df[all_df[cfg.split_by].isin(val_ids)]
+        self.val_df[self.label_list] /= self.val_df[self.label_list].sum(axis=1).values[:, None]
 
         if self.cfg.hard_sample:
-            labels = all_df[['seizure_vote', 'lpd_vote', 'gpd_vote', 'lrda_vote', 'grda_vote', 'other_vote']].values + 1e-5
+            labels = all_df[['seizure_vote', 'lpd_vote', 'gpd_vote', 'lrda_vote', 'grda_vote', 'other_vote']].values / all_df[self.label_list].sum(axis=1).values[:, None] + 1e-5
             all_df['kl'] = torch.nn.functional.kl_div(
             torch.log(torch.tensor(labels)),
             torch.tensor([1 / 6] * 6),
             reduction='none'
             ).sum(dim=1).numpy()
+            labels = self.val_df[['seizure_vote', 'lpd_vote', 'gpd_vote', 'lrda_vote', 'grda_vote', 'other_vote']].values / self.val_df[self.label_list].sum(axis=1).values[:, None] + 1e-5
+            self.val_df['kl'] = torch.nn.functional.kl_div(
+            torch.log(torch.tensor(labels)),
+            torch.tensor([1 / 6] * 6),
+            reduction='none'
+            ).sum(dim=1).numpy()
             self.train_df = all_df[all_df['kl'] < 5.5]
+            self.val_df = self.val_df[self.val_df['kl'] < 5.5]
 
         train_idx = self.train_df.index
         val_idx = self.val_df.index
@@ -118,7 +125,6 @@ class HMSDataModule(LightningDataModule):
         self.train_path_label, self.val_path_label, _, _ = get_path_label(train_idx=train_idx, 
                                                                 val_idx=val_idx, 
                                                                 label_list=self.label_list,
-                                                                level_label_list=self.level_label_list, 
                                                                 processed_dir=self.processed_dir,
                                                                 train_all=all_df,
                                                                 eeg_spec_version=self.cfg.eeg_spec_version)
@@ -136,7 +142,10 @@ class HMSDataModule(LightningDataModule):
                                        data_process_ver=self.cfg.data_process_ver,
                                        is_train=True, 
                                        do_horizontal_flip=self.cfg.aug.do_horizontal_flip,
-                                       do_label_smoothing=self.cfg.do_label_smoothing)
+                                       do_label_smoothing=self.cfg.do_label_smoothing,
+                                       do_xy_masking=self.cfg.aug.do_xy_masking,
+                                       cut_edge_spec=self.cfg.cut_edge_spec,
+                                       cut_spec_width=self.cfg.cut_spec_width)
         train_loader = DataLoader(
             train_dataset, 
             batch_size=self.cfg.batch_size, 

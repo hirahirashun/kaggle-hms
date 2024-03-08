@@ -4,10 +4,8 @@ import torch.nn as nn
 
 
 def get_loss_fn(model_name, pred_confidence=False):
-    if (model_name=="HMSSpecPararellModel") or (model_name=="HMSSpecEEGPararellModel"):
+    if (model_name=="HMSSpecPararellModel") or (model_name=="HMSSpecEEGPararellModel") or (model_name=="HMSSpecEEGThreePararellModel"):
         loss_fn = KLDWithContrastiveLoss(pred_confidence=pred_confidence)
-    elif model_name=="HMSSpecEEGThreePararellModel":
-        loss_fn = KLDWithThreeModalContrastiveLoss()
     else:
         loss_fn = KLDivLossWithLogits()
 

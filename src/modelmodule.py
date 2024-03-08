@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 
 import albumentations as A
@@ -6,6 +7,7 @@ import pandas as pd
 import torch
 import torch.optim as optim
 from pytorch_lightning import LightningModule
+from scipy.special import softmax
 from transformers import get_cosine_schedule_with_warmup
 
 from src.conf import TrainConfig
@@ -46,17 +48,19 @@ class HMSModel(LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-        img, t, level_t = batch["spec_img"],  batch["target"], batch['level_target']
+        img, t, level_t, level_p = batch["spec_img"],  batch["target"], batch['target'], batch['target']
 
         if self.cfg.aug.do_mixup and (np.random.random() > 0.5):
-            img_original, t_original, level_t_original = img[:img.shape[0]//2], t[:t.shape[0]//2], level_t[:level_t.shape[0]//2]
-            img_mixup, t_mixup, level_t_mixup, index, lam = mixup_data(img[img.shape[0]//2:], t[t.shape[0]//2:], level_t[level_t.shape[0]//2:])
+            img_original, t_original, level_t_original, level_p_original = img[:img.shape[0]//2], t[:t.shape[0]//2], level_t[:level_t.shape[0]//2], level_p[:level_p.shape[0]//2]
+            img_mixup, t_mixup, level_t_mixup, level_p_mixup, index, lam = mixup_data(img[img.shape[0]//2:], t[t.shape[0]//2:], level_t[level_t.shape[0]//2:], level_p[level_p.shape[0]//2:])
             img = torch.cat([img_original, img_mixup], 0)
             t = torch.cat([t_original, t_mixup], 0)
             level_t = torch.cat([level_t_original, level_t_mixup])
+            level_p = torch.cat([level_p_original, level_p_mixup])
             batch["spec_img"] = img
             batch["target"] = t
             batch['level_target'] = level_t
+            batch['level_pred'] = level_p
 
             if self.cfg.use_raw_eeg:
                 eeg = batch["raw_eeg"]
@@ -67,14 +71,16 @@ class HMSModel(LightningModule):
                 batch["raw_eeg"] = eeg
 
         elif self.cfg.aug.do_cutmix and (np.random.random() > 0.5):
-            img_original, t_original, level_t_original = img[:img.shape[0]//2], t[:t.shape[0]//2], level_t[:level_t.shape[0]//2]
-            img_cutmix, t_cutmix, level_t_cutmix, index, lam = cutmix_data(img[img.shape[0]//2:], t[t.shape[0]//2:], level_t[level_t.shape[0]//2:])
+            img_original, t_original, level_t_original, level_p_original = img[:img.shape[0]//2], t[:t.shape[0]//2], level_t[:level_t.shape[0]//2], level_p[:level_p.shape[0]//2]
+            img_cutmix, t_cutmix, level_t_cutmix, level_p_cutmix, index, lam = cutmix_data(img[img.shape[0]//2:], t[t.shape[0]//2:], level_t[level_t.shape[0]//2:], level_p[level_p.shape[0]//2:])
             img = torch.cat([img_original, img_cutmix], 0)
             t = torch.cat([t_original, t_cutmix], 0)
             level_t = torch.cat([level_t_original, level_t_cutmix])
+            level_p = torch.cat([level_p_original, level_p_cutmix])
             batch["spec_img"] = img
             batch["target"] = t
             batch["level_target"] = level_t
+            batch['level_pred'] = level_p
 
             if self.cfg.use_raw_eeg:
                 eeg = batch["raw_eeg"]
@@ -114,13 +120,13 @@ class HMSModel(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         t = batch["target"]
-        level_t = batch['level_target']
+        level_t = batch['target']
         self.model.training = False
         output = self.model(batch)
         loss = self.loss_func(output, t, level_t)
 
         if isinstance(output, dict):
-            output = output['weighted_output']
+            output = output['output']
 
 
         if isinstance(loss, dict):
@@ -149,7 +155,7 @@ class HMSModel(LightningModule):
         self.validation_step_outputs.append(
             (   
                 t.detach().cpu().numpy(),
-                output.softmax(dim=1).detach().cpu(),
+                output.detach().cpu(),
                 loss.detach().cpu().numpy(),
             )
         )
@@ -162,7 +168,7 @@ class HMSModel(LightningModule):
         losses = np.array([x[2] for x in self.validation_step_outputs])
         loss = losses.mean()
 
-        val_pred_df = pd.DataFrame(preds, columns=self.cfg.labels)
+        val_pred_df = pd.DataFrame(softmax(preds, axis=1), columns=self.cfg.labels)
 
         val_pred_df.insert(0, "label_id", self.val_df["label_id"].values)
 
@@ -180,6 +186,7 @@ class HMSModel(LightningModule):
             torch.save(self.model.state_dict(), self.cfg.dir.save_dir + f"/fold_{self.fold_id}/best_model.pth")
             print(f"Saved best model {self.best_score} -> {val_score}")
             self.best_score = val_score
+        else: print("Val score is not top 1.")
 
         self.validation_step_outputs.clear()
 
@@ -189,3 +196,48 @@ class HMSModel(LightningModule):
             optimizer, num_training_steps=self.trainer.max_steps, **self.cfg.scheduler
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+    
+    def predict_step(self, batch, batch_idx):
+        t = batch["target"]
+        level_t = batch['target']
+        self.model.training = False
+        output = self.model(batch)
+        loss = self.loss_func(output, t, level_t)
+
+        if isinstance(output, dict):
+            output = output['output']
+
+        if isinstance(loss, dict):
+            loss = loss['loss']
+
+        self.validation_step_outputs.append(
+            (   
+                t.detach().cpu().numpy(),
+                output.detach().cpu(),
+                loss.detach().cpu().numpy(),
+            )
+        )
+
+        return output
+    
+    def on_predict_end(self):
+        labels = np.concatenate([x[0] for x in self.validation_step_outputs])
+        preds = np.concatenate([x[1] for x in self.validation_step_outputs])
+        losses = np.array([x[2] for x in self.validation_step_outputs])
+    
+        val_pred_df = pd.DataFrame(softmax(preds, axis=1), columns=self.cfg.labels)
+
+        val_pred_df.insert(0, "label_id", self.val_df["label_id"].values)
+
+        self.best_score = score(solution=self.val_df[["label_id"] + self.cfg.labels].copy().reset_index(drop=True), 
+                          submission=val_pred_df, 
+                          row_id_column_name='label_id')
+
+        np.save(self.cfg.dir.save_dir + f"/fold_{self.fold_id}/labels.npy", labels)
+        np.save(self.cfg.dir.save_dir + f"/fold_{self.fold_id}/preds.npy", preds)
+        val_pred_df.insert(0, "label_id", self.val_df["label_id"].values)
+        val_pred_df.to_csv(self.cfg.dir.save_dir + f"/fold_{self.fold_id}/val_pred_df.csv", index=False)
+
+        self.validation_step_outputs.clear()
+
+        return 

@@ -59,7 +59,7 @@ class TrainerConfig:
     accumulate_grad_batches: int
     monitor: str
     monitor_mode: str
-    check_val_every_n_epoch: int
+    val_check_interval: int
 
 
 @dataclass
@@ -82,6 +82,7 @@ class AugConfig:
   do_mixup: bool
   do_cutmix: bool
   do_horizontal_flip: bool
+  do_xy_masking: bool 
 
 @dataclass
 class TrainConfig:
@@ -113,6 +114,9 @@ class TrainConfig:
     do_label_smoothing: bool
     hard_sample: bool
     pred_confidence: bool
+    use_target_pattern: bool
+    cut_edge_spec: bool
+    cut_spec_width: int
     dir: DirConfig
     model: ModelConfig
     trainer: TrainerConfig

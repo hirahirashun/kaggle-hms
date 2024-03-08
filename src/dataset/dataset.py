@@ -4,6 +4,7 @@ from pathlib import Path
 import albumentations as A
 import numpy as np
 import torch
+#import torch_audiomentations as tA
 from torchvision.transforms import RandomHorizontalFlip
 
 FilePath = tp.Union[str, Path]
@@ -17,7 +18,6 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         eeg_spec_paths: tp.Sequence[FilePath],
         raw_eeg_paths: tp.Sequence[FilePath],
         labels: tp.Sequence[Label],
-        level_labels: tp.Sequence[Label],
         spec_transform: A.Compose,
         raw_eeg_transform: tp.Any,
         use_eeg_spec: bool = True,
@@ -25,14 +25,16 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         is_train: bool = True,
         do_horizontal_flip: bool = False,
         do_label_smoothing: bool = False,
+        do_xy_masking: bool = False,
         num_samples: int = 10000,
         data_process_ver: int = 1,
+        cut_edge_spec: bool = False,
+        cut_spec_width: int = 22
     ):
         self.spec_paths = spec_paths
         self.eeg_spec_paths = eeg_spec_paths
         self.raw_eeg_paths = raw_eeg_paths
         self.labels = labels
-        self.level_labels = level_labels
 
         self.spec_transform = spec_transform
         self.raw_eeg_transform = raw_eeg_transform
@@ -42,12 +44,32 @@ class HMSHBACDataset(torch.utils.data.Dataset):
 
         self.is_train = is_train
 
+        self.cut_edge_spec = cut_edge_spec
+        self.cut_spec_width = cut_spec_width
+
         self.do_horizontal_flip = do_horizontal_flip
         self.do_label_smoothing = do_label_smoothing
+        self.do_xy_masking = do_xy_masking
+        if do_xy_masking:
+            params = {    
+            "num_masks_x": (1, 2, 3, 4),
+            "num_masks_y": (1, 2, 3, 4),    
+            "mask_y_length": (1, 10, 20, 30),
+            "mask_x_length": (1, 10, 20, 30),
+            "fill_value": 0.0,  
+            }
+            self.xy_transform = A.Compose([A.XYMasking(**params, p=0.5)])
 
         self.num_samples = num_samples
 
         self.data_process_ver = data_process_ver
+
+        if self.use_raw_eeg:
+            """self.train_raw_eeg_transform = tA.Compose(
+                transforms=[
+                     # tA.ShuffleChannels(p=0.25,mode="per_channel",p_mode="per_channel",),
+                     tA.AddColoredNoise(p=0.15,mode="per_channel",p_mode="per_channel", max_snr_in_db = 15, sample_rate=200),
+                ])"""
 
 
     def __len__(self):
@@ -62,11 +84,11 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         eeg_spec_path = self.eeg_spec_paths[index]
         raw_eeg_path = self.raw_eeg_paths[index]
         label = self.labels[index]
-        level_label = self.level_labels[index]
 
         if self.is_train and self.do_label_smoothing:
-            label = self.__apply_label_smoothing(label)
-            level_label = self.__apply_label_smoothing(level_label)
+            label = self._apply_label_smoothing(label)
+        elif np.sum(label) >= 1:
+            label /= np.sum(label)
 
         img = np.load(spec_path)  # shape: (Hz, Time) = (400, 300)
         
@@ -80,6 +102,9 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         img = img - img_mean
         img_std = img.std(axis=(0, 1))
         img = img / (img_std + eps)
+
+        if self.cut_edge_spec:
+            img = img[self.cut_spec_width:-self.cut_spec_width]
 
         img = img[..., None] # shape: (Hz, Time) -> (Hz, Time, Channel)
         img = self._apply_spec_transform(img)
@@ -119,7 +144,10 @@ class HMSHBACDataset(torch.utils.data.Dataset):
             img = torch.from_numpy(img)
             horizontal_flag = True
 
-        data_dict = {"spec_img": img, "target": label, "level_target": level_label}
+        if self.is_train and self.do_xy_masking:
+            img = self._apply_xy_masking(img)
+
+        data_dict = {"spec_img": img, "target": label}
 
         if self.use_raw_eeg:
             raw_eeg = np.load(raw_eeg_path)
@@ -130,6 +158,11 @@ class HMSHBACDataset(torch.utils.data.Dataset):
                 raw_eeg = np.copy(raw_eeg[:, ::-1])
                 raw_eeg = torch.from_numpy(raw_eeg)
 
+            if self.is_train:
+                raw_eeg = raw_eeg[None, :, :]
+                #raw_eeg = self.train_raw_eeg_transform(raw_eeg)
+                raw_eeg = raw_eeg[0, :, :]
+                
             data_dict["raw_eeg"] = raw_eeg
 
         return data_dict
@@ -147,7 +180,7 @@ class HMSHBACDataset(torch.utils.data.Dataset):
 
         return samples
     
-    def __apply_label_smoothing(self, labels, factor=0.05):
+    def _apply_label_smoothing(self, labels, factor=0.05):
         """
         Apply label smoothing.
         :param labels: Original labels.
@@ -155,9 +188,22 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         :return: Smoothed labels.
         """
         num_classes = labels.shape[-1]
+        label_sum = np.sum(labels)
+        factor =  1/(5 + label_sum)
+
+        labels /= label_sum
         labels = labels * (1 - factor)
         labels = labels + (factor / num_classes)
     
         return labels
     
+    
+    def _apply_xy_masking(self, img):
+        img = torch.permute(img, (1, 2, 0))
+        img = img.numpy()
+        img = self.xy_transform(image=img)["image"]
+        img = torch.from_numpy(img)
+        img = torch.permute(img, (2, 0, 1))
+    
+        return img
 
