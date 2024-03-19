@@ -65,6 +65,7 @@ class TrainerConfig:
 @dataclass
 class OptimizerConfig:
     lr: float
+    weight_decay: float
 
 
 @dataclass
@@ -97,8 +98,10 @@ class TrainConfig:
     num_classes: int
     split_by: str
     spec_img_size: int
+    use_kaggle_spec: bool
     use_eeg_spec: bool
     use_raw_eeg: bool
+    use_stft_eeg: bool
     use_overlap: bool
     exclude_difficult_data: bool
     pretrained: bool
@@ -113,6 +116,7 @@ class TrainConfig:
     eeg_spec_version: int
     do_label_smoothing: bool
     hard_sample: bool
+    val_hard_sample: bool
     pred_confidence: bool
     use_target_pattern: bool
     cut_edge_spec: bool

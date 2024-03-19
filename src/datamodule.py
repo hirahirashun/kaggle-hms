@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from src.conf import TrainConfig
 from src.dataset.dataset import HMSHBACDataset
-from src.utils.common import process_raw_eeg_data
+from src.utils.process_raw_eeg import process_raw_eeg_data
 
 
 ###################
@@ -115,7 +115,8 @@ class HMSDataModule(LightningDataModule):
             reduction='none'
             ).sum(dim=1).numpy()
             self.train_df = all_df[all_df['kl'] < 5.5]
-            self.val_df = self.val_df[self.val_df['kl'] < 5.5]
+            if self.cfg.val_hard_sample:
+                self.val_df = self.val_df[self.val_df['kl'] < 5.5]
 
         train_idx = self.train_df.index
         val_idx = self.val_df.index
@@ -136,8 +137,10 @@ class HMSDataModule(LightningDataModule):
         train_dataset = HMSHBACDataset(**self.train_path_label, 
                                        spec_transform=self.spec_transform, 
                                        raw_eeg_transform=self.raw_eeg_transform, 
+                                       use_kaggle_spec=self.cfg.use_kaggle_spec,
                                        use_eeg_spec=self.cfg.use_eeg_spec, 
                                        use_raw_eeg=self.cfg.use_raw_eeg, 
+                                       use_stft_eeg=self.cfg.use_stft_eeg,
                                        num_samples=self.cfg.num_samples, 
                                        data_process_ver=self.cfg.data_process_ver,
                                        is_train=True, 
@@ -160,8 +163,10 @@ class HMSDataModule(LightningDataModule):
         val_dataset = HMSHBACDataset(**self.val_path_label, 
                                      spec_transform=self.spec_transform, 
                                      raw_eeg_transform=self.raw_eeg_transform, 
+                                     use_kaggle_spec=self.cfg.use_kaggle_spec,
                                      use_eeg_spec=self.cfg.use_eeg_spec, 
                                      use_raw_eeg=self.cfg.use_raw_eeg, 
+                                     use_stft_eeg=self.cfg.use_stft_eeg,
                                      data_process_ver=self.cfg.data_process_ver,
                                      is_train=False)
         val_loader = DataLoader(

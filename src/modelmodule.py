@@ -48,19 +48,16 @@ class HMSModel(LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-        img, t, level_t, level_p = batch["spec_img"],  batch["target"], batch['target'], batch['target']
+        img, t = batch["spec_img"], batch['target']
 
         if self.cfg.aug.do_mixup and (np.random.random() > 0.5):
-            img_original, t_original, level_t_original, level_p_original = img[:img.shape[0]//2], t[:t.shape[0]//2], level_t[:level_t.shape[0]//2], level_p[:level_p.shape[0]//2]
-            img_mixup, t_mixup, level_t_mixup, level_p_mixup, index, lam = mixup_data(img[img.shape[0]//2:], t[t.shape[0]//2:], level_t[level_t.shape[0]//2:], level_p[level_p.shape[0]//2:])
+            img_original, t_original = img[:img.shape[0]//2], t[:t.shape[0]//2]
+            img_mixup, t_mixup, index, lam = mixup_data(img[img.shape[0]//2:], t[t.shape[0]//2:])
             img = torch.cat([img_original, img_mixup], 0)
             t = torch.cat([t_original, t_mixup], 0)
-            level_t = torch.cat([level_t_original, level_t_mixup])
-            level_p = torch.cat([level_p_original, level_p_mixup])
+
             batch["spec_img"] = img
             batch["target"] = t
-            batch['level_target'] = level_t
-            batch['level_pred'] = level_p
 
             if self.cfg.use_raw_eeg:
                 eeg = batch["raw_eeg"]
@@ -71,16 +68,13 @@ class HMSModel(LightningModule):
                 batch["raw_eeg"] = eeg
 
         elif self.cfg.aug.do_cutmix and (np.random.random() > 0.5):
-            img_original, t_original, level_t_original, level_p_original = img[:img.shape[0]//2], t[:t.shape[0]//2], level_t[:level_t.shape[0]//2], level_p[:level_p.shape[0]//2]
-            img_cutmix, t_cutmix, level_t_cutmix, level_p_cutmix, index, lam = cutmix_data(img[img.shape[0]//2:], t[t.shape[0]//2:], level_t[level_t.shape[0]//2:], level_p[level_p.shape[0]//2:])
+            img_original, t_original = img[:img.shape[0]//2], t[:t.shape[0]//2]
+            img_cutmix, t_cutmix, index, lam = cutmix_data(img[img.shape[0]//2:], t[t.shape[0]//2:])
             img = torch.cat([img_original, img_cutmix], 0)
             t = torch.cat([t_original, t_cutmix], 0)
-            level_t = torch.cat([level_t_original, level_t_cutmix])
-            level_p = torch.cat([level_p_original, level_p_cutmix])
+
             batch["spec_img"] = img
             batch["target"] = t
-            batch["level_target"] = level_t
-            batch['level_pred'] = level_p
 
             if self.cfg.use_raw_eeg:
                 eeg = batch["raw_eeg"]
@@ -91,7 +85,7 @@ class HMSModel(LightningModule):
                 batch["raw_eeg"] = eeg
 
         output = self.model(batch)
-        loss = self.loss_func(output, t, level_t)
+        loss = self.loss_func(output, t)
 
         if isinstance(loss, dict):
             for key in loss.keys():
@@ -110,8 +104,8 @@ class HMSModel(LightningModule):
             self.log(
                 "train_loss",
                 loss,
-                on_step=False,
-                on_epoch=True,
+                on_step=True,
+                on_epoch=False,
                 logger=True,
                 prog_bar=True,
             )
@@ -120,10 +114,9 @@ class HMSModel(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         t = batch["target"]
-        level_t = batch['target']
         self.model.training = False
         output = self.model(batch)
-        loss = self.loss_func(output, t, level_t)
+        loss = self.loss_func(output, t)
 
         if isinstance(output, dict):
             output = output['output']
@@ -134,8 +127,8 @@ class HMSModel(LightningModule):
                 self.log(
                 f"valid_{key}",
                 loss[key],
-                on_step=False,
-                on_epoch=True,
+                on_step=True,
+                on_epoch=False,
                 logger=True,
                 prog_bar=True,
                 )
@@ -146,8 +139,8 @@ class HMSModel(LightningModule):
             self.log(
                 "valid_loss",
                 loss,
-                on_step=False,
-                on_epoch=True,
+                on_step=True,
+                on_epoch=False,
                 logger=True,
                 prog_bar=True,
             )
@@ -191,7 +184,7 @@ class HMSModel(LightningModule):
         self.validation_step_outputs.clear()
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=self.cfg.optimizer.lr)
+        optimizer = optim.AdamW(self.parameters(), lr=self.cfg.optimizer.lr, weight_decay=self.cfg.optimizer.weight_decay)
         scheduler = get_cosine_schedule_with_warmup(
             optimizer, num_training_steps=self.trainer.max_steps, **self.cfg.scheduler
         )
@@ -199,10 +192,9 @@ class HMSModel(LightningModule):
     
     def predict_step(self, batch, batch_idx):
         t = batch["target"]
-        level_t = batch['target']
         self.model.training = False
         output = self.model(batch)
-        loss = self.loss_func(output, t, level_t)
+        loss = self.loss_func(output, t)
 
         if isinstance(output, dict):
             output = output['output']

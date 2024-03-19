@@ -16,7 +16,7 @@ class KLDivLossWithLogits(nn.KLDivLoss):
     def __init__(self):
         super().__init__(reduction="batchmean")
 
-    def forward(self, y, t, level_t):
+    def forward(self, y, t):
         y = nn.functional.log_softmax(y,  dim=1)
         loss = super().forward(y, t)
 
@@ -56,10 +56,10 @@ class KLDWithContrastiveLoss(nn.Module):
         self.contrastive_loss = nn.CosineEmbeddingLoss()
         self.pred_confidence = pred_confidence
 
-    def forward(self, y, t, level_t):
-        cls_loss = self.classification_loss(y['output'], t, level_t)
-        cls_loss_original = self.classification_loss(y['original_output'], t, level_t)
-        cls_loss_eeg = self.classification_loss(y['eeg_output'], t, level_t)
+    def forward(self, y, t):
+        cls_loss = self.classification_loss(y['output'], t)
+        cls_loss_original = self.classification_loss(y['original_output'], t)
+        cls_loss_eeg = self.classification_loss(y['eeg_output'], t)
 
         # Calculate contrastive loss 
         
@@ -73,7 +73,7 @@ class KLDWithContrastiveLoss(nn.Module):
         total_loss = cls_loss + 0.5*cls_loss_original + 0.5*cls_loss_eeg + 0.5*contrastive_loss # Aux losses
 
         if self.pred_confidence:
-            cls_loss_weighted = self.classification_loss(y['weighted_output'], t, level_t)
+            cls_loss_weighted = self.classification_loss(y['weighted_output'], t)
             total_loss += 0.5*cls_loss_weighted
 
         return {
@@ -91,11 +91,11 @@ class KLDWithThreeModalContrastiveLoss(nn.Module):
         self.contrastive_loss = nn.CosineEmbeddingLoss()
         self.pred_confidence = pred_confidence
 
-    def forward(self, y, t, level_t):
-        cls_loss = self.classification_loss(y['output'], t, level_t)
-        cls_loss_original_spec = self.classification_loss(y['original_spec_output'], t, level_t)
-        cls_loss_eeg_spec = self.classification_loss(y['eeg_spec_output'], t, level_t)
-        cls_loss_eeg = self.classification_loss(y['eeg_output'], t, level_t)
+    def forward(self, y, t):
+        cls_loss = self.classification_loss(y['output'], t)
+        cls_loss_original_spec = self.classification_loss(y['original_spec_output'], t)
+        cls_loss_eeg_spec = self.classification_loss(y['eeg_spec_output'], t)
+        cls_loss_eeg = self.classification_loss(y['eeg_output'], t)
 
         # Calculate contrastive loss 
         

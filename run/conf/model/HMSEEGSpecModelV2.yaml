@@ -1,0 +1,4 @@
+  name: HMSEEGSpecModelV2
+  params:
+    backbone_name: efficientnet_b0
+    pretrained: true

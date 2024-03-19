@@ -1,0 +1,8 @@
+  name: EEGNet
+  params:
+    kernels:
+      - 3
+      - 5
+      - 7
+      - 9
+    fixed_kernel_size: 17

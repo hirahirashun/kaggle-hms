@@ -1,0 +1,14 @@
+  name: EEGNetV2
+  params:
+    kernels: 
+      - 3
+      - 5
+      - 7 
+      - 9
+      - 11
+    in_channels: 8
+    fixed_kernel_size: 5
+    linear_layer_features: 304
+    dilation: 1
+    groups: 1
+    dropout: 0.0

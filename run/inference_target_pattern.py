@@ -1,5 +1,4 @@
 import gc
-import os
 from pathlib import Path
 
 import albumentations as A
@@ -7,6 +6,7 @@ import click
 import numpy as np
 import pandas as pd
 import scipy as sp
+import timm
 import torch
 import torch.nn as nn
 #from omegaconf import OmegaConf
@@ -23,49 +23,22 @@ from src.models.base_model import HMSSpecBaseModel
 from src.models.pararell_model import HMSSpecPararellModel
 from src.utils.common import process_raw_eeg_data, to_device, trace
 
-CLASSES = ["seizure_vote", "lpd_vote", "gpd_vote", "lrda_vote", "grda_vote", "other_vote"]
+CLASSES = ["pattern_edge", "pattern_idealized", "pattern_proto", "pattern_undecided"]
 SPEC_IMG_SIZE = 512
 
-def get_model(cfg: TrainConfig):
-    #hydraが使えないせいでこんなことに
-    model_name = cfg.model['name']
-    backbone_name = cfg.model['params']['backbone_name']
-
-    if model_name == "HMSSpecBaseModel":
-        if cfg.data_process_ver == 2:
-            in_channels = 3
-        elif cfg.data_process_ver == 1:
-            in_channels = 1
-            if cfg.use_eeg_spec:
-                in_channels += 4
-        elif cfg.data_process_ver == 3:
-            in_channels = 1
-            if cfg.use_eeg_spec:
-                in_channels += 1
-        model = HMSSpecBaseModel(cfg=cfg, num_classes=cfg.num_classes, in_channels=in_channels, backbone_name=backbone_name, pretrained=False)
-
-    elif model_name == "HMSSpecPararellModel":
-        if cfg.data_process_ver == 1:
-            in_channels_original_spec = 1
-            in_channels_eeg_spec = 4
-        elif cfg.data_process_ver == 2:
-            in_channels_original_spec = 3
-            in_channels_eeg_spec = 3
-        elif cfg.data_process_ver == 3:
-            in_channels_original_spec = 1
-            in_channels_eeg_spec = 1
-        
-        model = HMSSpecPararellModel(cfg=cfg, 
-                                      num_classes=cfg.num_classes, 
-                                      in_channels_original_spec=in_channels_original_spec, 
-                                      in_channels_eeg_spec=in_channels_eeg_spec,
-                                      backbone_name=backbone_name,
-                                      pred_confidence=cfg.pred_confidence,
-                                      use_target_pattern=cfg.use_target_pattern,
-                                      pretrained=False)
-        model.is_training = False
-    else:
-        raise ValueError(f"Invalid model name: {cfg.model.name}")
+def get_model(cfg: TrainConfig):        
+    if cfg.data_process_ver == 2:
+        in_channels = 3
+    elif cfg.data_process_ver == 1:
+        in_channels = 1
+        if cfg.use_eeg_spec:
+            in_channels += 4
+    elif cfg.data_process_ver == 3:
+        in_channels = 1
+        if cfg.use_eeg_spec:
+            in_channels += 1
+            
+        model = timm.create_model(model_name="efficientnet_b0", pretrained=False, in_chans=in_channels, num_classes=4, drop_rate=0.2, drop_path_rate=0.2)
     
     return model
 
@@ -81,7 +54,7 @@ def load_model(
 
     # load weights
     weight_path = f"{model_dir}/{exp_name}/fold_{fold_id}/best_model.pth"
-    model.load_state_dict(torch.load(weight_path, map_location='cuda:0'))
+    model.load_state_dict(torch.load(weight_path))
     print('load weight from "{}"'.format(weight_path))
 
 
@@ -129,23 +102,16 @@ def get_test_dataloader(
         raw_eeg_pths.append(raw_eeg_path)
     
     labels = [0]*len(test_idx)
-    #level_labels = [0]*len(test_idx)
-
-    """if os.path.isfile(f"{processed_dir}/target_pattern.csv"):
-        level_classes = ["pattern_edge", "pattern_idealized", "pattern_proto", "pattern_undecided"]
-        level_preds = pd.read_csv(f"{processed_dir}/target_pattern.csv")
-        level_preds = torch.from_numpy(level_preds[level_classes].values).float()
-        if level_preds.ndim == 1:
-
-            level_preds = level_preds[None, :]
-    else:
-        level_preds = [0]*len(test_idx)"""
+    level_labels = [0]*len(test_idx)
+    level_preds = [0]*len(test_idx)
 
     test_data = {
         "spec_paths": [spec_img_pths[idx] for idx in test_idx],
         "eeg_spec_paths": [eeg_spec_img_pths[idx] for idx in test_idx],
         "raw_eeg_paths": [raw_eeg_pths[idx] for idx in test_idx],
         "labels": labels,
+        "level_labels": level_labels,
+        "level_preds": level_preds
     }
     
     height = train_cfg.spec_img_size
@@ -183,7 +149,7 @@ def get_test_dataloader(
 
 
 def inference(
-    loader: DataLoader, n_folds: int, model_dir: str, exp_name: str, cfg: TrainConfig, device: torch.device, exclude_list: list, output_logit: bool = False
+    loader: DataLoader, n_folds: int, model_dir: str, exp_name: str, cfg: TrainConfig, device: torch.device, exclude_list: list
 ) -> np.ndarray:
     
     preds = []
@@ -205,7 +171,7 @@ def inference(
             for batch in tqdm(loader, desc="inference"):
                 with torch.no_grad():
                     x = to_device(batch, device)
-                    pred = model(x).detach().cpu().numpy()
+                    pred = model(x['spec_img']).detach().cpu().numpy()
                     this_preds.append(pred)
 
             this_preds = np.concatenate(this_preds)
@@ -219,12 +185,9 @@ def inference(
     preds = np.concatenate(preds)
     preds = preds.mean(axis=0)
 
-    if output_logit:
-        return preds
+    preds = softmax(preds, axis=1)
 
-    else:
-        preds = softmax(preds, axis=1)
-        return preds
+    return preds
 
 
 def make_submission(
@@ -245,8 +208,7 @@ def make_submission(
 @click.option("--batch_size", "-b", default=32)
 @click.option("--num_workers", "-n", default=2)
 @click.option('--exclude_list', '-e', default=[], multiple=True)
-@click.option('--output_logit', default=False)
-def main(exp_name, seed, batch_size, num_workers, exclude_list, output_logit):
+def main(exp_name, seed, batch_size, num_workers, exclude_list):
     seed_everything(seed)
 
     data_dir = "/kaggle/input/hms-harmful-brain-activity-classification"
@@ -273,13 +235,12 @@ def main(exp_name, seed, batch_size, num_workers, exclude_list, output_logit):
     exclude_list = [int(x) for x in exclude_list]
 
     with trace("inference"):
-        preds = inference(test_dataloader, train_cfg['n_folds'], model_dir, exp_name, cfg, device, exclude_list, output_logit)
+        preds = inference(test_dataloader, train_cfg['n_folds'], model_dir, exp_name, cfg, device, exclude_list)
 
     with trace("make submission"):
-        smpl_sub = pd.read_csv(data_dir + "/sample_submission.csv")
         sub_df = make_submission(preds=preds, test_df=test_df)
 
-    sub_df.to_csv(f"{output_dir}/submission.csv", index=False)
+    sub_df.to_csv(f"{processed_dir}/target_pattern.csv", index=False)
 
 
 if __name__ == "__main__":

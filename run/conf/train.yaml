@@ -23,7 +23,7 @@ defaults:
 
 seed: 1086
 exp_name: dummy
-n_folds: 5
+n_folds: 10
 n_folds_total: 10
 n_folds_start: 0
 fold_ver: 4
@@ -33,9 +33,11 @@ spec_img_size: 512
 batch_size: 32
 num_workers: 2
 num_samples: 10000
-early_stopping_rounds: 5
+early_stopping_rounds: 10
+use_kaggle_spec: true
 use_eeg_spec: true
 use_raw_eeg: false
+use_stft_eeg: false
 use_overlap: false
 pretrained: false
 exclude_difficult_data: false
@@ -45,9 +47,13 @@ num_classes: 6
 loss_ver: 1
 data_process_ver: 3
 eeg_spec_version: 2
-do_label_smoothing: false
+do_label_smoothing: true
 hard_sample: false
+val_hard_sample: false
 pred_confidence: false
+use_target_pattern: false
+cut_edge_spec: false
+cut_spec_width: 22
 
 
 
@@ -70,11 +76,12 @@ trainer:
   accumulate_grad_batches: 1
   monitor: valid_score
   monitor_mode: min
-  check_val_every_n_epoch: 1
+  val_check_interval: 100
 
 # optimizer
 optimizer:
   lr: 0.0001
+  weight_decay: 0.0
 
 # scheduler
 scheduler:
@@ -82,5 +89,6 @@ scheduler:
 
 aug:
   do_mixup: true
-  do_cutmix: true
-  do_horizontal_flip: true
+  do_cutmix: false
+  do_horizontal_flip: false
+  do_xy_masking: true

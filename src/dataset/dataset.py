@@ -4,8 +4,11 @@ from pathlib import Path
 import albumentations as A
 import numpy as np
 import torch
-#import torch_audiomentations as tA
+from scipy import signal
 from torchvision.transforms import RandomHorizontalFlip
+
+from src.utils.process_raw_eeg import (butter_bandpass_filter,
+                                       butter_lowpass_filter)
 
 FilePath = tp.Union[str, Path]
 Label = tp.Union[int, float, np.ndarray]
@@ -20,8 +23,10 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         labels: tp.Sequence[Label],
         spec_transform: A.Compose,
         raw_eeg_transform: tp.Any,
+        use_kaggle_spec: bool = True,
         use_eeg_spec: bool = True,
         use_raw_eeg: bool = False,
+        use_stft_eeg: bool = False,
         is_train: bool = True,
         do_horizontal_flip: bool = False,
         do_label_smoothing: bool = False,
@@ -39,8 +44,10 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         self.spec_transform = spec_transform
         self.raw_eeg_transform = raw_eeg_transform
 
+        self.use_kaggle_spec = use_kaggle_spec
         self.use_eeg_spec = use_eeg_spec
         self.use_raw_eeg = use_raw_eeg
+        self.use_stft_eeg = use_stft_eeg
 
         self.is_train = is_train
 
@@ -64,13 +71,6 @@ class HMSHBACDataset(torch.utils.data.Dataset):
 
         self.data_process_ver = data_process_ver
 
-        if self.use_raw_eeg:
-            """self.train_raw_eeg_transform = tA.Compose(
-                transforms=[
-                     # tA.ShuffleChannels(p=0.25,mode="per_channel",p_mode="per_channel",),
-                     tA.AddColoredNoise(p=0.15,mode="per_channel",p_mode="per_channel", max_snr_in_db = 15, sample_rate=200),
-                ])"""
-
 
     def __len__(self):
         #return self.num_samples if self.is_train else len(self.spec_paths)
@@ -90,24 +90,22 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         elif np.sum(label) >= 1:
             label /= np.sum(label)
 
-        img = np.load(spec_path)  # shape: (Hz, Time) = (400, 300)
-        
-        # log transform
-        img = np.clip(img,np.exp(-4), np.exp(8))
-        img = np.log(img)
-        
-        # normalize per image
-        eps = 1e-6
-        img_mean = img.mean(axis=(0, 1))
-        img = img - img_mean
-        img_std = img.std(axis=(0, 1))
-        img = img / (img_std + eps)
+        if self.use_kaggle_spec:
+            img = np.load(spec_path)  # shape: (Hz, Time) = (400, 300)
+            
+            # log transform
+            img = np.clip(img,np.exp(-4), np.exp(8))
+            img = np.log(img)
+            
+            # normalize per image
+            eps = 1e-6
+            img_mean = img.mean(axis=(0, 1))
+            img = img - img_mean
+            img_std = img.std(axis=(0, 1))
+            img = img / (img_std + eps)
 
-        if self.cut_edge_spec:
-            img = img[self.cut_spec_width:-self.cut_spec_width]
-
-        img = img[..., None] # shape: (Hz, Time) -> (Hz, Time, Channel)
-        img = self._apply_spec_transform(img)
+            img = img[..., None] # shape: (Hz, Time) -> (Hz, Time, Channel)
+            img = self._apply_spec_transform(img)
 
         if self.use_eeg_spec:
             eeg_img = np.load(eeg_spec_path)         
@@ -124,11 +122,23 @@ class HMSHBACDataset(torch.utils.data.Dataset):
                 img = torch.cat([img, eeg_img], dim=2)
 
             elif self.data_process_ver == 3:
-                eeg_img = [eeg_img[:, :, i:i+1] for i in range(4)]
-                eeg_img = np.concatenate(eeg_img, 0)
-                eeg_img = self._apply_spec_transform(eeg_img)  
 
-                img = torch.cat([img, eeg_img], dim=0)
+                if eeg_img.shape[1] == 1152:
+                    eeg_img = [eeg_img[:, :, i:i+1] for i in range(4)]
+                    eeg_img = np.concatenate(eeg_img, 0) # (128, 1152, 4) -> (512, 1152, 1)
+                    eeg_img_0 = eeg_img[:, :640]
+                    eeg_img_0 = self._apply_spec_transform(eeg_img_0)  
+                    eeg_img_1 = eeg_img[:, 640:]
+                    eeg_img_1 = self._apply_spec_transform(eeg_img_1)
+                    eeg_img = torch.cat([eeg_img_0, eeg_img_1], dim=0)  
+                else: 
+                    eeg_img = [eeg_img[:, :, i:i+1] for i in range(4)]
+                    eeg_img = np.concatenate(eeg_img, 0) # (128, 512, 4) -> (512, 512, 1)
+
+                    eeg_img = self._apply_spec_transform(eeg_img)  
+                if self.use_kaggle_spec:
+                    img = torch.cat([img, eeg_img], dim=0)
+                else: img = eeg_img
 
 
         if self.data_process_ver == 2:
@@ -149,21 +159,57 @@ class HMSHBACDataset(torch.utils.data.Dataset):
 
         data_dict = {"spec_img": img, "target": label}
 
-        if self.use_raw_eeg:
+        if self.use_raw_eeg or self.use_stft_eeg:
             raw_eeg = np.load(raw_eeg_path)
-            raw_eeg = self._apply_raw_eeg_transform(raw_eeg=raw_eeg)
+            for i in range(raw_eeg.shape[-1]):
+                diff_feat = raw_eeg[:, i]
+                if self.is_train and (np.random.random() <= 0.1):
+                    lowcut = np.random.randint(10, 20)
+                    highcut = lowcut + 1.0
+                    diff_feat = butter_bandpass_filter(
+                        diff_feat,
+                        lowcut,
+                        highcut,
+                        200,
+                        order=2,
+                    )
+                if self.is_train and (np.random.random() <= 0.1):
+                    diff_feat = np.zeros_like(diff_feat)
+
+                raw_eeg[:, i] = diff_feat
+
+            raw_eeg = np.clip(raw_eeg, -1024, 1024)
+
+            raw_eeg = np.nan_to_num(raw_eeg, nan=0) / 32.0
+            raw_eeg = raw_eeg[4000:6000, :]
+            raw_eeg = butter_lowpass_filter(raw_eeg, order=2)  # 4
+            raw_eeg = torch.from_numpy(raw_eeg).float()
             
             if horizontal_flag:
                 raw_eeg = raw_eeg.numpy()
                 raw_eeg = np.copy(raw_eeg[:, ::-1])
                 raw_eeg = torch.from_numpy(raw_eeg)
+            
+                
+            #if self.is_train:
+            #    offset = ((10000 - 2000) * np.random.randint(0, 1000)) // 1000
+            #else:
+            #    offset = (10000 - 2000) // 2
 
-            if self.is_train:
-                raw_eeg = raw_eeg[None, :, :]
-                #raw_eeg = self.train_raw_eeg_transform(raw_eeg)
-                raw_eeg = raw_eeg[0, :, :]
+            #raw_eeg = raw_eeg[offset:offset+2000]
                 
             data_dict["raw_eeg"] = raw_eeg
+
+            if self.use_stft_eeg:
+                stft_eeg = []
+                for i in range(raw_eeg.shape[-1]):
+                    f, t, linear = signal.stft(raw_eeg[:, i], fs=200, nperseg=400, noverlap=350)
+                    this_inputs = torch.FloatTensor(linear[:40]).transpose(0,1) #.to('cuda')
+                    this_inputs = this_inputs[:, :, None]
+                    stft_eeg.append(this_inputs)
+                stft_eeg = torch.cat(stft_eeg, axis=-1)
+                
+                data_dict['stft_eeg'] = stft_eeg
 
         return data_dict
 
@@ -174,7 +220,7 @@ class HMSHBACDataset(torch.utils.data.Dataset):
         return img
     
     def _apply_raw_eeg_transform(self, raw_eeg: np.ndarray):
-        raw_eeg = self.raw_eeg_transform(raw_eeg)
+        # raw_eeg = self.raw_eeg_transform(raw_eeg)
         samples = torch.from_numpy(raw_eeg).float()
         samples = samples.permute(1,0)
 
